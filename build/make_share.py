@@ -21,6 +21,11 @@ APP = os.path.join(ROOT, "app")
 OUT = os.path.join(ROOT, "share")
 
 SITE_NAME = "EV Charge India"
+
+# Where the page will be served from. WhatsApp, iMessage and Slack crawlers need
+# ABSOLUTE urls for og:image - a relative path silently produces no preview card.
+# Override with SITE_URL when hosting somewhere other than GitHub Pages.
+SITE_URL = os.environ.get("SITE_URL", "https://sree831100225-crypto.github.io/ev-charge-india").rstrip("/")
 TITLE = "EV Charge India - ask about any EV charger in India"
 DESC = ("Find EV charging stations across India - connectors, charging speed, "
         "price, payment methods and maps. Works offline, on any device.")
@@ -282,13 +287,15 @@ def build():
 <meta property="og:site_name" content="{SITE_NAME}" />
 <meta property="og:title" content="{TITLE}" />
 <meta property="og:description" content="{DESC}" />
-<meta property="og:image" content="og-image.png" />
+<meta property="og:url" content="{SITE_URL}/" />
+<meta property="og:image" content="{SITE_URL}/og-image.png" />
+<meta property="og:image:secure_url" content="{SITE_URL}/og-image.png" />
 <meta property="og:image:width" content="1200" />
 <meta property="og:image:height" content="630" />
 <meta name="twitter:card" content="summary_large_image" />
 <meta name="twitter:title" content="{TITLE}" />
 <meta name="twitter:description" content="{DESC}" />
-<meta name="twitter:image" content="og-image.png" />
+<meta name="twitter:image" content="{SITE_URL}/og-image.png" />
 <meta name="apple-mobile-web-app-title" content="{SITE_NAME}" />"""
     html = html.replace('<link rel="manifest" href="manifest.webmanifest" />',
                         '<link rel="manifest" href="manifest.webmanifest" />\n' + og)

@@ -129,6 +129,10 @@ jobs:
 
       # 3. Regenerate the app data and the shareable page from the new database.
       - name: Build the site
+        env:
+          # Absolute URLs for the WhatsApp / iMessage preview card. Change this
+          # if you move the site to a custom domain.
+          SITE_URL: https://sree831100225-crypto.github.io/ev-charge-india
         run: |
           set -e
           python build/export.py
