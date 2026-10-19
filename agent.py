@@ -49,6 +49,40 @@ def _haversine(a, b, c, d):
     return 2 * R * math.asin(math.sqrt(x))
 
 
+
+# Alternative spellings of the same place. Indian place names are transliterated
+# inconsistently ("Koyambedu" / "Koyembedu", "Bangalore" / "Bengaluru"), and a
+# user typing one variant must still find records stored under the other.
+PLACE_ALIASES = {
+    "koyembedu": "koyambedu", "koyambed": "koyambedu", "koiyambedu": "koyambedu",
+    "koiyembedu": "koyambedu", "koyambedu": "koyambedu",
+    "bangalore": "bengaluru", "bengaluru": "bengaluru",
+    "bombay": "mumbai", "madras": "chennai", "cochin": "kochi",
+    "calcutta": "kolkata", "gurgaon": "gurugram", "mysore": "mysuru",
+    "trivandrum": "thiruvananthapuram", "pondicherry": "puducherry",
+    "banaras": "varanasi", "benares": "varanasi", "kashi": "varanasi",
+    "thrikkakkara": "thrikkakara", "thrikkakara": "thrikkakara",
+    "vizag": "visakhapatnam", "calicut": "kozhikode",
+    "prayagraj": "allahabad", "allahabad": "allahabad",
+    "mangalore": "mangaluru", "baroda": "vadodara",
+    "poona": "pune", "simla": "shimla", "gauhati": "guwahati",
+}
+
+
+def variants(term):
+    """Every spelling of a place term, so 'Koyembedu' also finds 'Koyambedu'."""
+    t = (term or "").strip().lower()
+    if not t:
+        return []
+    out = {t}
+    if t in PLACE_ALIASES:
+        out.add(PLACE_ALIASES[t])
+    for alias, canon in PLACE_ALIASES.items():
+        if canon == t:
+            out.add(alias)
+    return sorted(out)
+
+
 def _rows(con, sql, args=()):
     con.row_factory = __import__("sqlite3").Row
     return con.execute(sql, args).fetchall()
@@ -75,16 +109,20 @@ def resolve_place(con, text):
         if r:
             return (r[0]["latitude"], r[0]["longitude"], f"PIN {pin.group(0)}")
 
-    r = _rows(con, "SELECT name,latitude,longitude FROM cities "
-                   "WHERE lower(name)=? AND latitude IS NOT NULL LIMIT 1", (ql,))
-    if not r:
+    r = None
+    for term in (variants(ql) or [ql]):
         r = _rows(con, "SELECT name,latitude,longitude FROM cities "
-                       "WHERE lower(name) LIKE ? AND latitude IS NOT NULL "
-                       "ORDER BY length(name) LIMIT 1", (f"{ql}%",))
-    if not r:
-        r = _rows(con, "SELECT name,latitude,longitude FROM cities "
-                       "WHERE lower(name) LIKE ? AND latitude IS NOT NULL "
-                       "ORDER BY length(name) LIMIT 1", (f"%{ql}%",))
+                       "WHERE lower(name)=? AND latitude IS NOT NULL LIMIT 1", (term,))
+        if not r:
+            r = _rows(con, "SELECT name,latitude,longitude FROM cities "
+                           "WHERE lower(name) LIKE ? AND latitude IS NOT NULL "
+                           "ORDER BY length(name) LIMIT 1", (f"{term}%",))
+        if not r:
+            r = _rows(con, "SELECT name,latitude,longitude FROM cities "
+                           "WHERE lower(name) LIKE ? AND latitude IS NOT NULL "
+                           "ORDER BY length(name) LIMIT 1", (f"%{term}%",))
+        if r:
+            break
     if r:
         return (r[0]["latitude"], r[0]["longitude"], r[0]["name"])
 
@@ -95,12 +133,16 @@ def resolve_place(con, text):
                        "WHERE state_code=? AND latitude IS NOT NULL", (r[0]["code"],))
         if c and c[0]["a"] is not None:
             return (c[0]["a"], c[0]["b"], r[0]["name"])
-    r = _rows(con, "SELECT s.name, c.name AS city_name, s.latitude, s.longitude "
-                   "FROM stations s LEFT JOIN cities c ON c.id = s.city_id "
-                   "WHERE (lower(s.name) LIKE ? OR lower(s.address) LIKE ? "
-                   "       OR lower(c.name) LIKE ?) "
-                   "AND s.latitude IS NOT NULL LIMIT 1",
-              (f"%{ql}%", f"%{ql}%", f"%{ql}%"))
+    r = None
+    for term in (variants(ql) or [ql]):
+        r = _rows(con, "SELECT s.name, c.name AS city_name, s.latitude, s.longitude "
+                       "FROM stations s LEFT JOIN cities c ON c.id = s.city_id "
+                       "WHERE (lower(s.name) LIKE ? OR lower(s.address) LIKE ? "
+                       "       OR lower(c.name) LIKE ?) "
+                       "AND s.latitude IS NOT NULL LIMIT 1",
+                  (f"%{term}%", f"%{term}%", f"%{term}%"))
+        if r:
+            break
     if r:
         return (r[0]["latitude"], r[0]["longitude"], r[0]["city_name"] or r[0]["name"])
 
@@ -232,7 +274,9 @@ def answer(con, query, lat=None, lng=None, place=None):
             "this", "from", "into", "over", "under", "about",
         }
         toks = [t for t in re.findall(r"[a-z]{4,}", ql) if t not in stop]
-        filters["q"] = toks[0] if toks else q
+        term = toks[0] if toks else q
+        filters["q"] = term
+        filters["q_terms"] = variants(term) or [term]
         intent["type"] = "search"
     else:
         intent["type"] = "find"
@@ -267,10 +311,14 @@ def answer(con, query, lat=None, lng=None, place=None):
     if filters.get("payment"):
         where.append("s.id IN (SELECT station_id FROM station_payments WHERE method = ?)")
         args.append(filters["payment"])
-    if filters.get("q"):
-        like = f"%{filters['q']}%"
-        where.append("(s.name LIKE ? OR s.address LIKE ? OR o.name LIKE ?)")
-        args += [like, like, like]
+    if filters.get("q_terms"):
+        ors = []
+        for t in filters["q_terms"]:
+            like = f"%{t}%"
+            ors.append("(s.name LIKE ? OR s.address LIKE ? OR o.name LIKE ? "
+                       "OR c.name LIKE ? OR s.village LIKE ?)")
+            args += [like, like, like, like, like]
+        where.append("(" + " OR ".join(ors) + ")")
 
     sql = """
     SELECT s.id, s.name, s.location_type, s.ownership, s.status, s.latitude, s.longitude,

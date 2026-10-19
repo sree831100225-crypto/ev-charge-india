@@ -159,7 +159,7 @@ function filtered() {
     if (state.verified && !s.is_validated) return false;
     if (q) {
       const hay = [s.name, s.city, s.state, s.operator, s.highway, s.village, s.address, s.district].filter(Boolean).join(" ").toLowerCase();
-      if (!hay.includes(q)) return false;
+      if (!variants(q).some(t => hay.includes(t))) return false;
     }
     return true;
   });
@@ -437,6 +437,33 @@ const VENUE_PHRASE = {
   "Public parking": "at public parking",
 };
 
+/* Alternative spellings of the same place - Indian names are transliterated
+   inconsistently, so "Koyembedu" must find records stored as "Koyambedu". */
+const PLACE_ALIASES = {
+  koyembedu: "koyambedu", koyambed: "koyambedu", koiyambedu: "koyambedu",
+  koiyembedu: "koyambedu", koyambedu: "koyambedu",
+  bangalore: "bengaluru", bengaluru: "bengaluru",
+  bombay: "mumbai", madras: "chennai", cochin: "kochi",
+  calcutta: "kolkata", gurgaon: "gurugram", mysore: "mysuru",
+  trivandrum: "thiruvananthapuram", pondicherry: "puducherry",
+  banaras: "varanasi", benares: "varanasi", kashi: "varanasi",
+  thrikkakkara: "thrikkakara", thrikkakara: "thrikkakara",
+  vizag: "visakhapatnam", calicut: "kozhikode",
+  mangalore: "mangaluru", baroda: "vadodara",
+  poona: "pune", simla: "shimla", gauhati: "guwahati",
+};
+
+function variants(term) {
+  const t = (term || "").trim().toLowerCase();
+  if (!t) return [];
+  const out = new Set([t]);
+  if (PLACE_ALIASES[t]) out.add(PLACE_ALIASES[t]);
+  for (const [alias, canon] of Object.entries(PLACE_ALIASES)) {
+    if (canon === t) out.add(alias);
+  }
+  return [...out];
+}
+
 /* ---------------- location ---------------- */
 const R_EARTH_KM = 6371;
 
@@ -471,22 +498,32 @@ function resolvePlace(text) {
       return { lat: hit.latitude, lng: hit.longitude, label: `PIN ${pin[0]}`, source: "place" };
   }
 
-  const cities = META.cities || [];
-  const city = cities.find(c => c.name.toLowerCase() === q)
-            || cities.find(c => c.name.toLowerCase().startsWith(q))
-            || cities.find(c => c.name.toLowerCase().includes(q));
-  if (city) return { lat: city.latitude, lng: city.longitude, label: city.name, source: "place" };
+  // Try every spelling of the term, so "Koyembedu" also finds "Koyambedu".
+  const terms = variants(q);
 
-  const sn = (META.states || []).find(s => s.name.toLowerCase() === q || s.code.toLowerCase() === q);
-  if (sn) {
-    const c = stateCentroid(sn.code);
-    if (c) return { ...c, label: sn.name, source: "place" };
+  const cities = META.cities || [];
+  for (const t of terms) {
+    const city = cities.find(c => c.name.toLowerCase() === t)
+              || cities.find(c => c.name.toLowerCase().startsWith(t))
+              || cities.find(c => c.name.toLowerCase().includes(t));
+    if (city) return { lat: city.latitude, lng: city.longitude, label: city.name, source: "place" };
   }
-  const st = DATA.find(s => (s.name || "").toLowerCase().includes(q))
-          || DATA.find(s => (s.address || "").toLowerCase().includes(q))
-          || DATA.find(s => (s.city || "").toLowerCase().includes(q));
-  if (st && st.latitude != null)
-    return { lat: st.latitude, lng: st.longitude, label: st.city || st.name, source: "place" };
+
+  for (const t of terms) {
+    const sn = (META.states || []).find(s => s.name.toLowerCase() === t || s.code.toLowerCase() === t);
+    if (sn) {
+      const c = stateCentroid(sn.code);
+      if (c) return { ...c, label: sn.name, source: "place" };
+    }
+  }
+
+  for (const t of terms) {
+    const st = DATA.find(s => (s.name || "").toLowerCase().includes(t))
+            || DATA.find(s => (s.address || "").toLowerCase().includes(t))
+            || DATA.find(s => (s.city || "").toLowerCase().includes(t));
+    if (st && st.latitude != null)
+      return { lat: st.latitude, lng: st.longitude, label: st.city || st.name, source: "place" };
+  }
 
   return null;
 }
@@ -703,7 +740,7 @@ function localAgent(q, loc) {
     if (f.venue && s.venue_type !== f.venue) return false;
     if (f.text) {
       const hay = [s.name, s.address, s.city, s.operator, s.district, s.village].filter(Boolean).join(" ").toLowerCase();
-      if (!hay.includes(f.text)) return false;
+      if (!variants(f.text).some(t => hay.includes(t))) return false;
     }
     return true;
   });
