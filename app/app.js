@@ -655,6 +655,7 @@ function localAgent(q, loc) {
   if (/upi/.test(ql)) f.pay = "UPI";
   // venue type - "at a mall", "petrol pump", "hotel charging"
   const venueRules = [
+    [/\b(supermarkets?|super markets?|angaadis?|angadis?|hypermarkets?|grocer(?:y|ies))\b/, "Supermarket / grocery"],
     [/\b(cinemas?|multiplexs?|movies?|inoxs?|pvrs?)\b/, "Cinema"],
     [/\b(malls?|shoppings?|retails?)\b/, "Mall / retail"],
     [/\b(hotels?|resorts?|hospitalitys?|tajs?|marriotts?|itcs?)\b/, "Hotel / resort"],
@@ -678,6 +679,17 @@ function localAgent(q, loc) {
   const city = (META.cities || []).map(c => c.name).sort((a, b) => b.length - a.length).find(c => new RegExp("\\b" + c.toLowerCase() + "\\b").test(ql));
   if (city) f.city = city;
 
+  // free-text fallback: search a meaningful token, not the whole query,
+  // so locality queries ("charging in Kakkanad") resolve
+  const STOP = new Set(["charging","charger","chargers","charge","station","stations",
+    "electric","vehicle","vehicles","near","nearby","with","have","having","show","find",
+    "list","give","best","good","around","where","which","what","there","here","some",
+    "any","that","this","from","into","over","under","about"]);
+  if (!Object.keys(f).length) {
+    const toks = (ql.match(/[a-z]{4,}/g) || []).filter(t => !STOP.has(t));
+    f.text = toks[0] || ql;
+  }
+
   let rows = DATA.filter(s => {
     if (f.speed && !s.connectors.some(c => c.speed === f.speed)) return false;
     if (f.conn && !s.connectors.some(c => c.type === f.conn)) return false;
@@ -689,6 +701,10 @@ function localAgent(q, loc) {
     if (f.state && s.state !== f.state) return false;
     if (f.city && s.city !== f.city) return false;
     if (f.venue && s.venue_type !== f.venue) return false;
+    if (f.text) {
+      const hay = [s.name, s.address, s.city, s.operator, s.district, s.village].filter(Boolean).join(" ").toLowerCase();
+      if (!hay.includes(f.text)) return false;
+    }
     return true;
   });
   // "near me" with no location yet: ask for one rather than guessing

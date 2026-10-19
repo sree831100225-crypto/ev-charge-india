@@ -162,6 +162,7 @@ def answer(con, query, lat=None, lng=None, place=None):
 
     # --- venue type: where the charger physically is
     for _re_v, _venue in [
+        (r"\b(supermarkets?|super markets?|angaadis?|angadis?|hypermarkets?|grocer(?:y|ies))\b", "Supermarket / grocery"),
         (r"\b(cinemas?|multiplexs?|movies?|inoxs?|pvrs?)\b", "Cinema"),
         (r"\b(malls?|shoppings?|retails?)\b", "Mall / retail"),
         (r"\b(hotels?|resorts?|hospitalitys?|tajs?|marriotts?|itcs?)\b", "Hotel / resort"),
@@ -219,8 +220,19 @@ def answer(con, query, lat=None, lng=None, place=None):
             break
 
     if not filters:
-        # free-text fallback -> name search
-        filters["q"] = q
+        # Free-text fallback. Searching the whole query never matches
+        # ("charging in Kakkanad" is not a substring of any address), so drop
+        # the filler words and search the meaningful token instead. This is what
+        # makes locality queries work for areas that aren't cities.
+        stop = {
+            "charging", "charger", "chargers", "charge", "station", "stations",
+            "electric", "vehicle", "vehicles", "near", "nearby", "with", "have",
+            "having", "show", "find", "list", "give", "best", "good", "around",
+            "where", "which", "what", "there", "here", "some", "any", "that",
+            "this", "from", "into", "over", "under", "about",
+        }
+        toks = [t for t in re.findall(r"[a-z]{4,}", ql) if t not in stop]
+        filters["q"] = toks[0] if toks else q
         intent["type"] = "search"
     else:
         intent["type"] = "find"
