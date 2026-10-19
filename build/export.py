@@ -51,6 +51,7 @@ for r in con.execute("""
         "last_updated": r["last_updated"], "source_id": r["source_id"],
         "source_ref": r["source_ref"], "is_validated": bool(r["is_validated"]),
         "data_source": r["data_source"], "coord_precision": r["coord_precision"],
+        "venue_type": r["venue_type"],
     })
 
 brands = [dict(x) for x in con.execute(
@@ -72,6 +73,9 @@ meta = {
     "speeds": ["Normal", "Fast", "Turbo"],
     "verified_count": con.execute("SELECT COUNT(*) FROM stations WHERE is_validated=1").fetchone()[0],
     "oem_count": con.execute("SELECT COUNT(*) FROM stations WHERE source_id='oem'").fetchone()[0],
+    "venues": [x[0] for x in con.execute(
+        "SELECT venue_type FROM stations WHERE venue_type IS NOT NULL "
+        "GROUP BY venue_type ORDER BY COUNT(*) DESC")],
     "brands": brands,
     "brand_network_count": con.execute(
         "SELECT COUNT(*) FROM brands WHERE operates_network=1").fetchone()[0],

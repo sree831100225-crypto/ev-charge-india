@@ -287,6 +287,9 @@ CREATE TABLE stations (
     source_ref TEXT,                       -- the source's own id for this record
     is_validated INTEGER DEFAULT 0,        -- 1 = confirmed by a government register
     coord_precision TEXT,                  -- exact | area | town  (how tight the lat/lng is)
+    venue_type TEXT,                       -- where the charger physically is: Mall / retail,
+                                           -- Hotel / resort, Cinema, Petrol station, Transit hub,
+                                           -- Hospital, Office / campus, Residential / society, ...
     last_updated TEXT,
     created_at TEXT
 );

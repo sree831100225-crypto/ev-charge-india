@@ -160,6 +160,23 @@ def answer(con, query, lat=None, lng=None, place=None):
     if m:
         filters["highway"] = "NH-" + re.sub(r"\D", "", m.group(1))
 
+    # --- venue type: where the charger physically is
+    for _re_v, _venue in [
+        (r"\b(cinemas?|multiplexs?|movies?|inoxs?|pvrs?)\b", "Cinema"),
+        (r"\b(malls?|shoppings?|retails?)\b", "Mall / retail"),
+        (r"\b(hotels?|resorts?|hospitalitys?|tajs?|marriotts?|itcs?)\b", "Hotel / resort"),
+        (r"\b(petrols?|fuels?|pumps?|gas stations?|bpcls?|iocls?|hpcls?|indianoils?)\b", "Petrol station"),
+        (r"\b(metros?|airports?|railways?|transits?)\b", "Transit hub"),
+        (r"\b(hospitals?)\b", "Hospital"),
+        (r"\b(offices?|tech parks?|workplaces?|campuss?)\b", "Office / campus"),
+        (r"\b(societys?|residentials?|apartments?|housings?)\b", "Residential / society"),
+        (r"\b(restaurants?|cafes?|food courts?)\b", "Restaurant / cafe"),
+        (r"\b(parkings?)\b", "Public parking"),
+    ]:
+        if re.search(_re_v, ql):
+            filters["venue"] = _venue
+            break
+
     # --- cheapest
     if re.search(r"\b(cheap|cheapest|lowest price|affordable|budget)\b", ql):
         filters["cheapest"] = True
@@ -213,6 +230,8 @@ def answer(con, query, lat=None, lng=None, place=None):
     where, args = [], []
     if filters.get("state"):
         where.append("s.state_code = ?"); args.append(filters["state"])
+    if filters.get("venue"):
+        where.append("s.venue_type = ?"); args.append(filters["venue"])
     if filters.get("city"):
         where.append("c.name = ?"); args.append(filters["city"])
     if filters.get("village"):
@@ -289,7 +308,10 @@ def answer(con, query, lat=None, lng=None, place=None):
     top = [_slim(r) for r in rows[:8]]
     where_txt = _describe(filters)
     if n == 0:
-        text = f"I couldn't find any stations matching {where_txt or 'that'}. Try a nearby city or a broader filter."
+        if where_txt:
+            text = f"I couldn't find any stations {where_txt}. Try a nearby city or a broader filter."
+        else:
+            text = "I couldn't find any stations for that. Try a nearby city or a broader filter."
     else:
         lead = "Here is 1 station" if n == 1 else f"Here are {n} stations"
         text = f"{lead} {where_txt}."
@@ -309,6 +331,20 @@ def _slim(r):
         "highway_direction": r["highway_direction"], "village": r["village"],
         "contact_phone": r["contact_phone"], "latitude": r["latitude"], "longitude": r["longitude"],
     }
+
+
+VENUE_PHRASE = {
+    "Mall / retail": "at malls and retail sites",
+    "Hotel / resort": "at hotels and resorts",
+    "Cinema": "at cinemas",
+    "Petrol station": "at petrol stations",
+    "Transit hub": "at transit hubs",
+    "Hospital": "at hospitals",
+    "Office / campus": "at offices and campuses",
+    "Residential / society": "at residential societies",
+    "Restaurant / cafe": "at restaurants and cafes",
+    "Public parking": "at public parking",
+}
 
 
 def _describe(f):
@@ -335,6 +371,8 @@ def _describe(f):
         parts.append(f"accepting {f['payment']}")
     if f.get("is_24x7"):
         parts.append("open 24x7")
+    if f.get("venue"):
+        parts.append(VENUE_PHRASE.get(f["venue"], "at " + f["venue"].lower()))
     if f.get("nearest"):
         parts.append("near you")
     if f.get("q"):

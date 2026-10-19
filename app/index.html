@@ -75,6 +75,9 @@
       <input id="list-search" class="search-input" type="search" placeholder="Search city, highway, operator…" />
       <div class="chip-row" id="type-chips"></div>
       <div class="chip-row" id="conn-chips"></div>
+      <select id="venue-select" class="venue-select" aria-label="Filter by venue type">
+        <option value="">Anywhere — all venue types</option>
+      </select>
     </div>
     <div id="list-results" class="list-results"></div>
   </div>
@@ -124,7 +127,7 @@
 
     <div class="profile-list">
       <div class="p-row"><span>Last data refresh</span><b id="p-refresh">—</b></div>
-      <div class="p-row"><span>Data sources</span><b>e-AMRIT, OEM releases, sample</b></div>
+      <div class="p-row"><span>Data sources</span><b>e-AMRIT, OEM + venue, sample</b></div>
       <div class="p-row"><span>App version</span><b>1.1.0 (prototype)</b></div>
       <div class="p-row"><span>Data status</span><b class="warn">Mixed: verified + sample</b></div>
     </div>

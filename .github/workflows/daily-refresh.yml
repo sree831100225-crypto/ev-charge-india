@@ -80,6 +80,7 @@ jobs:
           python build/seed.py
           python refresh.py
           python build/add_oem_data.py
+          python build/add_venue_data.py
 
       # 2. Fail loudly if no source delivered live data. A daily job that
       #    quietly re-imports a snapshot looks healthy while doing nothing.

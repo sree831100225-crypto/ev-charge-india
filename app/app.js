@@ -10,7 +10,7 @@ const API = ""; // same-origin; set to a base URL if the API is elsewhere
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 
-let state = { speed: "", conn: "", type: "", verified: false, q: "", user: null, map: null, markers: [], chatLoc: null };
+let state = { speed: "", conn: "", type: "", venue: "", verified: false, q: "", user: null, map: null, markers: [], chatLoc: null };
 
 /* ---------------- boot ---------------- */
 document.addEventListener("DOMContentLoaded", () => {
@@ -133,6 +133,17 @@ function buildChips() {
 
   $("#map-search").oninput = e => { state.q = e.target.value; $("#list-search").value = e.target.value; renderMarkers(); renderList(); };
   $("#list-search").oninput = e => { state.q = e.target.value; $("#map-search").value = e.target.value; renderList(); renderMarkers(); };
+
+  // venue type - where the charger physically is (mall, hotel, petrol pump...)
+  const vs = $("#venue-select");
+  if (vs) {
+    (META.venues || []).forEach(v => {
+      const o = document.createElement("option");
+      o.value = v; o.textContent = v;
+      vs.appendChild(o);
+    });
+    vs.onchange = () => { state.venue = vs.value; renderList(); renderMarkers(); };
+  }
 }
 
 function markChips(row, el) { $$(".chip", row).forEach(c => { if (!c.classList.contains("keep")) c.classList.remove("on"); }); el.classList.add("on"); }
@@ -144,6 +155,7 @@ function filtered() {
     if (state.speed && !s.connectors.some(c => c.speed === state.speed)) return false;
     if (state.conn && !s.connectors.some(c => c.type === state.conn)) return false;
     if (state.type && s.location_type !== state.type) return false;
+    if (state.venue && s.venue_type !== state.venue) return false;
     if (state.verified && !s.is_validated) return false;
     if (q) {
       const hay = [s.name, s.city, s.state, s.operator, s.highway, s.village, s.address, s.district].filter(Boolean).join(" ").toLowerCase();
@@ -225,6 +237,7 @@ function renderList() {
         </div>
         <span class="badge ${badgeCls}">${esc(s.location_type.replace(" / Rural", ""))}</span>
       </div>
+      ${s.venue_type ? `<div class="card-tags" style="margin-top:6px"><span class="tag venue">${esc(s.venue_type)}</span></div>` : ''}
       ${s.is_validated ? '<div class="card-tags" style="margin-top:6px"><span class="tag verified">✓ Govt verified · ' + esc(s.data_source || '') + '</span></div>' : ''}
       ${s.source_id === 'oem' ? '<div class="card-tags" style="margin-top:6px"><span class="tag verified">OEM published · ' + esc(s.data_source || '') + '</span></div>' : ''}
       <div class="card-tags">
@@ -334,7 +347,8 @@ function openDetail(id) {
 function initChat() {
   $("#chat").dataset.init = "1";
   botSay("Namaste! I'm your EV Charge agent. Ask me about chargers anywhere in India — by city, highway, connector, speed or price.", []);
-  const sugs = ["Chargers near me", "Turbo chargers on NH-48", "Cheapest charging in Jaipur", "CCS2 stations in Pune", "Rural stations in Haryana"];
+  const sugs = ["Chargers near me", "Charging at malls", "Petrol pumps with charging",
+                "Hotels with EV charging", "Cinemas with charging", "Turbo chargers on NH-48"];
   $("#chat-suggest").innerHTML = sugs.map(s => `<div class="sug">${esc(s)}</div>`).join("");
   $$(".sug").forEach(el => el.onclick = () => { $("#chat-text").value = el.textContent; $("#chat-form").requestSubmit(); });
 }
@@ -409,6 +423,20 @@ function botTyping() {
 function scrollChat() { const c = $("#chat"); c.scrollTop = c.scrollHeight; }
 
 /* offline agent: mirrors the Python engine in agent.py */
+/* venue type -> readable phrase (naive "+s" reads badly for "Mall / retail") */
+const VENUE_PHRASE = {
+  "Mall / retail": "at malls and retail sites",
+  "Hotel / resort": "at hotels and resorts",
+  "Cinema": "at cinemas",
+  "Petrol station": "at petrol stations",
+  "Transit hub": "at transit hubs",
+  "Hospital": "at hospitals",
+  "Office / campus": "at offices and campuses",
+  "Residential / society": "at residential societies",
+  "Restaurant / cafe": "at restaurants and cafes",
+  "Public parking": "at public parking",
+};
+
 /* ---------------- location ---------------- */
 const R_EARTH_KM = 6371;
 
@@ -537,6 +565,20 @@ function localAgent(q, loc) {
   if (/cheap|lowest|affordable|budget/.test(ql)) f.cheap = true;
   if (/nearest|near me|nearby|around me/.test(ql)) f.near = true;
   if (/upi/.test(ql)) f.pay = "UPI";
+  // venue type - "at a mall", "petrol pump", "hotel charging"
+  const venueRules = [
+    [/\b(cinemas?|multiplexs?|movies?|inoxs?|pvrs?)\b/, "Cinema"],
+    [/\b(malls?|shoppings?|retails?)\b/, "Mall / retail"],
+    [/\b(hotels?|resorts?|hospitalitys?|tajs?|marriotts?|itcs?)\b/, "Hotel / resort"],
+    [/\b(petrols?|fuels?|pumps?|gas stations?|bpcls?|iocls?|hpcls?|indianoils?)\b/, "Petrol station"],
+    [/\b(metros?|airports?|railways?|transits?)\b/, "Transit hub"],
+    [/\b(hospitals?)\b/, "Hospital"],
+    [/\b(offices?|tech parks?|workplaces?|campuss?)\b/, "Office \/ campus"],
+    [/\b(societys?|residentials?|apartments?|housings?)\b/, "Residential \/ society"],
+    [/\b(restaurants?|cafes?|food courts?)\b/, "Restaurant \/ cafe"],
+    [/\b(parkings?)\b/, "Public parking"],
+  ];
+  for (const [re, v] of venueRules) if (re.test(ql)) { f.venue = v; break; }
   const op = (META.operators || []).map(o => o.name).sort((a, b) => b.length - a.length).find(o => {
     const ol = o.toLowerCase(), parts = ol.split(" "), first = parts[0], head = parts.slice(0, 2).join(" ");
     const esc = first.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -558,6 +600,7 @@ function localAgent(q, loc) {
     if (f.operator && s.operator !== f.operator) return false;
     if (f.state && s.state !== f.state) return false;
     if (f.city && s.city !== f.city) return false;
+    if (f.venue && s.venue_type !== f.venue) return false;
     return true;
   });
   // "near me" with no location yet: ask for one rather than guessing
@@ -580,8 +623,10 @@ function localAgent(q, loc) {
   const nearTxt = loc
     ? (loc.source === "gps" ? "near your current location" : "near " + loc.label)
     : (f.near ? "near you" : "");
-  const desc = [f.speed ? f.speed.toLowerCase() + "-charging" : "", f.conn || "", f.city ? "in " + f.city : (f.state ? "in " + f.state : ""), f.highway ? "on " + f.highway : "", f.operator ? "operated by " + f.operator : "", f.type ? f.type.toLowerCase() + " locations" : "", f.pay ? "accepting " + f.pay : "", nearTxt].filter(Boolean).join(" ");
-  if (!rows.length) return { answer: `I couldn't find any stations matching ${desc || "that"}. Try a nearby city or a broader filter.`, stations: [] };
+  const desc = [f.speed ? f.speed.toLowerCase() + "-charging" : "", f.conn || "", f.city ? "in " + f.city : (f.state ? "in " + f.state : ""), f.highway ? "on " + f.highway : "", f.venue ? (VENUE_PHRASE[f.venue] || "at " + f.venue.toLowerCase()) : "", f.operator ? "operated by " + f.operator : "", f.type ? f.type.toLowerCase() + " locations" : "", f.pay ? "accepting " + f.pay : "", nearTxt].filter(Boolean).join(" ");
+  if (!rows.length) return { answer: desc
+    ? `I couldn't find any stations ${desc}. Try a nearby city or a broader filter.`
+    : "I couldn't find any stations for that. Try a nearby city or a broader filter.", stations: [] };
   let ans = `${rows.length === 1 ? "Here is 1 station" : "Here are " + rows.length + " stations"} ${desc}.`;
   if (f.cheap && rows[0].min_price) ans += ` Cheapest is ${rows[0].name} at ₹${rows[0].min_price}/kWh.`;
   else if (loc && rows[0].distance_km != null) ans += ` Closest is ${rows[0].name}, ${rows[0].distance_km.toFixed(1)} km away.`;
