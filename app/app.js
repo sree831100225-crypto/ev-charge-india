@@ -497,7 +497,7 @@ function setChatLoc(loc) {
   if (chip && label) {
     if (loc) {
       label.textContent = loc.source === "gps"
-        ? `Using your current location (${loc.lat.toFixed(3)}, ${loc.lng.toFixed(3)})`
+        ? `Using your location${loc.accuracy_m ? ` (±${loc.accuracy_m} m)` : ""} · ${loc.lat.toFixed(3)}, ${loc.lng.toFixed(3)}`
         : `Searching around ${loc.label}`;
       chip.hidden = false;
     } else {
@@ -515,40 +515,128 @@ function nearestStations(n) {
     .slice(0, n);
 }
 
+/* In-app browsers (WhatsApp, Instagram, Facebook) routinely block geolocation
+   or silently deny it, which looks identical to "the button does nothing". */
+const IN_APP_BROWSER =
+  /\b(FBAN|FBAV|FB_IAB|Instagram|WhatsApp|Line\/|MicroMessenger|Twitter|SnapChat|GSA\/)\b/i
+    .test(navigator.userAgent || "");
+
+/* Read the current permission without triggering a prompt. Resolves "unknown"
+   on browsers that don't support the Permissions API (notably older Safari). */
+function geoPermission() {
+  return new Promise(resolve => {
+    if (!navigator.permissions || !navigator.permissions.query) return resolve("unknown");
+    let settled = false;
+    const finish = v => { if (!settled) { settled = true; resolve(v); } };
+    setTimeout(() => finish("unknown"), 1200);
+    navigator.permissions.query({ name: "geolocation" })
+      .then(st => finish(st.state))
+      .catch(() => finish("unknown"));
+  });
+}
+
+function getPosition(opts) {
+  return new Promise((resolve, reject) =>
+    navigator.geolocation.getCurrentPosition(resolve, reject, opts));
+}
+
 function useMyLocation() {
-  const chip = $("#loc-active"), label = $("#loc-label");
+  const btn = $("#btn-loc-gps");
+  const setBusy = b => {
+    if (!btn) return;
+    btn.disabled = b;
+    btn.textContent = b ? "Locating…" : "📍 Use my location";
+  };
+
   if (!navigator.geolocation) {
     botSay("This browser can't share a location. Type a city, area or PIN code instead.", []);
     return;
   }
   if (!window.isSecureContext) {
-    botSay("Sharing a location needs a secure (https) page. Type a city, area or PIN code instead.", []);
+    botSay("Location needs a secure (https) page, and this one isn't. " +
+           "Type a city, area or PIN code instead.", []);
     return;
   }
-  const btn = $("#btn-loc-gps");
-  if (btn) btn.disabled = true;
-  if (chip && label) { label.textContent = "Getting your location…"; chip.hidden = false; }
 
-  navigator.geolocation.getCurrentPosition(
-    p => {
-      if (btn) btn.disabled = false;
-      setChatLoc({ lat: p.coords.latitude, lng: p.coords.longitude,
-                   label: "Current location", source: "gps" });
-      const near = nearestStations(5);
-      botSay(near.length
-        ? `Got it — here are the chargers closest to you, nearest first.`
-        : `Got your location, but I have no stations with coordinates near you yet.`,
-        near);
-    },
-    err => {
-      if (btn) btn.disabled = false;
-      if (chip) chip.hidden = true;
-      botSay(err && err.code === 1
-        ? "Location permission was denied. Type a city, area or PIN code instead."
-        : "I couldn't get your location just now. Type a city, area or PIN code instead.", []);
-    },
-    { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 }
-  );
+  geoPermission().then(perm => {
+    if (perm === "denied") {
+      botSay("Location is blocked for this site, so your browser won't ask again. " +
+             "To switch it back on: tap the padlock (or ⓘ) in the address bar → " +
+             "Permissions → Location → Allow, then tap 📍 again. " +
+             "Or just type a city, area or PIN code.", []);
+      return;
+    }
+
+    if (IN_APP_BROWSER) {
+      botSay("Heads-up: in-app browsers (WhatsApp, Instagram) often block location. " +
+             "If nothing happens, open this link in Chrome or Safari — or type a " +
+             "city, area or PIN code.", []);
+    } else if (perm === "prompt") {
+      // Make the ask explicit rather than letting a browser dialog appear cold.
+      botSay("Your browser will ask for location access now — tap Allow to use it " +
+             "for this session.", []);
+    }
+
+    setBusy(true);
+    // Safety net: some webviews never call back at all. Without this the
+    // button stays disabled and the user gets nothing.
+    let settled = false;
+    const watchdog = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      setBusy(false);
+      botSay("Your browser didn't return a location. It may be blocked — open " +
+             "this page in Chrome or Safari, or type a city, area or PIN code.", []);
+    }, 25000);
+    acquire(perm, () => { settled = true; clearTimeout(watchdog); });
+  });
+
+  function acquire(perm, onSettled) {
+    getPosition({ enableHighAccuracy: true, timeout: 12000, maximumAge: 60000 })
+      .then(pos => { onSettled(); onFix(pos); })
+      .catch(err => {
+        // 2 = POSITION_UNAVAILABLE, 3 = TIMEOUT. High-accuracy GPS is unreliable
+        // indoors and on desktops with no GPS chip, so retry network-based
+        // before giving up - this is the single biggest cause of "it doesn't work".
+        if (err && (err.code === 2 || err.code === 3)) {
+          getPosition({ enableHighAccuracy: false, timeout: 20000, maximumAge: 300000 })
+            .then(pos => { onSettled(); onFix(pos); })
+            .catch(e2 => { onSettled(); onFail(e2); });
+        } else {
+          onSettled(); onFail(err);
+        }
+      });
+  }
+
+  function onFix(pos) {
+    setBusy(false);
+    const acc = pos.coords.accuracy;
+    setChatLoc({
+      lat: pos.coords.latitude, lng: pos.coords.longitude,
+      label: "Current location", source: "gps",
+      accuracy_m: Number.isFinite(acc) ? Math.round(acc) : null,
+    });
+    const near = nearestStations(5);
+    botSay(near.length
+      ? "Got it — here are the chargers closest to you, nearest first."
+      : "Got your location, but I have no stations with coordinates near you yet.",
+      near);
+  }
+
+  function onFail(err) {
+    setBusy(false);
+    if (IN_APP_BROWSER) {
+      // more actionable than "you declined" - the webview is the real problem
+      botSay("Couldn't get your location. In-app browsers usually block this — " +
+             "open the link in Chrome or Safari, or type a city, area or PIN code.", []);
+    } else if (err && err.code === 1) {
+      botSay("You declined location access. Tap 📍 again and choose Allow — " +
+             "or type a city, area or PIN code.", []);
+    } else {
+      botSay("I couldn't get your location just now. Type a city, area or PIN code " +
+             "instead.", []);
+    }
+  }
 }
 
 function localAgent(q, loc) {
