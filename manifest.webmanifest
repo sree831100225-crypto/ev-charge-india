@@ -1,0 +1,30 @@
+{
+  "name": "EV Charge India",
+  "short_name": "EV Charge",
+  "description": "Find every EV charging station in India - connectors, speeds, tariffs, payments, maps and an AI agent.",
+  "start_url": ".",
+  "scope": ".",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0B8A5E",
+  "theme_color": "#0B8A5E",
+  "categories": [
+    "travel",
+    "navigation",
+    "utilities"
+  ],
+  "icons": [
+    {
+      "src": "icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
