@@ -1,29 +1,47 @@
 # EV Charge India
 
 Find EV charging stations across India. Ask the agent in plain language, browse the
-map, and see the connectors, charging speed, price, payment methods and contact
-details for each station.
+map, and see connectors, charging speed, price, payment methods and contact details.
 
-**Open the app:** https://sree831100225-crypto.github.io/ev-charge-india/
+**Live:** https://sree831100225-crypto.github.io/ev-charge-india/
 
-It is a single self-contained page - the whole app and all 322 stations are inlined
-into `index.html`. No server, no sign-up, no build step. It installs to the home
-screen on Android and iOS and keeps working offline after the first visit.
+## How this repo works
 
-## What is here
+The site is **generated**, not hand-edited. A GitHub Actions workflow rebuilds the
+database and republishes the page **every day at 07:00 IST** (and on every push that
+touches the pipeline).
 
-| File | Purpose |
-|---|---|
-| `index.html` | The entire app: chat agent, map, list, station detail, 322 stations |
-| `manifest.webmanifest` | Makes it installable as an app |
-| `sw.js` | Service worker - offline support |
-| `og-image.png` | Link preview card for WhatsApp and iMessage |
-| `icon-192.png`, `icon-512.png` | App icons |
-| `_headers` | Security headers if you later serve it elsewhere |
+```
+build/seed.py         sample seed data (deterministic)
+refresh.py            pulls the live e-AMRIT government register
+build/add_oem_data.py OEM charging networks (22 vehicle brands)
+build/export.py       database -> app/data.js
+build/make_share.py   app -> the single self-contained page
+```
 
-## Data
+Run it locally:
 
-Station records come from public registers, state and DISCOM sources and operator
-feeds. 29 records are confirmed in the government's e-AMRIT register; the rest are
-realistic sample data. Treat it as a directory, not a live availability feed, and
-confirm status in the operator's own app before you plug in.
+```bash
+python build/seed.py
+python refresh.py
+python build/add_oem_data.py
+python build/export.py
+python build/make_share.py
+```
+
+## Data sources
+
+| Source | What it gives | Refresh |
+|---|---|---|
+| e-AMRIT (NITI Aayog) | Government public charging register, with an `isValidated` flag | Live, daily |
+| OEM releases | 22 vehicle brands' charging networks, and Mahindra/Ola published sites | As published |
+| Sample seed | Realistic records for coverage where no open data exists | Static |
+
+## Read this before trusting the data
+
+This is a **directory, not a live availability feed**. Coverage is strongest in cities
+and on national highways. 29 stations are government-verified; 11 are OEM-published;
+the rest are realistic sample records. Coordinates for OEM stations are derived from
+the published address to town or area level - see the `coord_precision` column.
+
+Confirm a charger is working in the operator's own app before driving to it.

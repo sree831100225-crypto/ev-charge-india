@@ -1,0 +1,101 @@
+name: Daily data refresh
+
+# Rebuilds the station database from live sources every day, regenerates the
+# share page, and publishes it to GitHub Pages.
+#
+# Runs on GitHub's runners, which have full internet access - unlike the
+# sandbox this project was built in, which cannot reach e-AMRIT.
+#
+# 01:30 UTC = 07:00 IST. Change the cron line to move the window.
+
+on:
+  schedule:
+    - cron: "30 1 * * *"
+  workflow_dispatch:          # lets you run it by hand from the Actions tab
+  push:
+    branches: [main]
+    paths:
+      - "app/**"
+      - "build/**"
+      - "sources/**"
+      - "refresh.py"
+      - "agent.py"
+      - ".github/workflows/daily-refresh.yml"
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  refresh-and-deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # 1. Rebuild the database from scratch: sample seed, then the live
+      #    e-AMRIT register, then the OEM network data.
+      - name: Rebuild database
+        run: |
+          set -e
+          python build/seed.py
+          python refresh.py
+          python build/add_oem_data.py
+
+      # 2. Report what the refresh actually produced.
+      - name: Report
+        run: |
+          python - <<'PY'
+          import sqlite3
+          con = sqlite3.connect("ev_charge_india.db")
+          total = con.execute("SELECT COUNT(*) FROM stations").fetchone()[0]
+          rows = con.execute(
+              "SELECT source_id, COUNT(*) FROM stations GROUP BY source_id ORDER BY 2 DESC"
+          ).fetchall()
+          verified = con.execute(
+              "SELECT COUNT(*) FROM stations WHERE is_validated=1").fetchone()[0]
+          oem = con.execute(
+              "SELECT COUNT(*) FROM stations WHERE source_id='oem'").fetchone()[0]
+          brands = con.execute("SELECT COUNT(*) FROM brands").fetchone()[0]
+          run = con.execute(
+              "SELECT source, records_seen, records_created, records_updated, notes "
+              "FROM refresh_log ORDER BY id DESC LIMIT 1").fetchone()
+          print(f"stations: {total}  " + "  ".join(f"{k}={v}" for k, v in rows))
+          print(f"verified: {verified}   oem: {oem}   brands: {brands}")
+          if run:
+              print(f"last refresh run: {run[0]} seen={run[1]} created={run[2]} "
+                    f"updated={run[3]}")
+              print(f"  notes: {run[4]}")
+          PY
+
+      # 3. Regenerate the app data and the shareable page from the new database.
+      - name: Build the site
+        run: |
+          set -e
+          python build/export.py
+          python build/make_share.py
+          mkdir -p site
+          cp -r share/. site/
+          rm -rf site/deploy site/*.md
+          ls -la site
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - id: deploy
+        uses: actions/deploy-pages@v4
