@@ -83,6 +83,22 @@
   <div id="view-agent" class="view">
     <div id="chat" class="chat"></div>
     <div class="chat-suggest" id="chat-suggest"></div>
+
+    <!-- Location: share GPS, or type a place to search around -->
+    <div class="loc-bar">
+      <button type="button" class="loc-gps" id="btn-loc-gps">
+        <span aria-hidden="true">📍</span> Use my location
+      </button>
+      <input id="loc-input" class="loc-input" type="text"
+             placeholder="or type a city, area or PIN code"
+             autocomplete="off" enterkeyhint="search" />
+    </div>
+    <div class="loc-active" id="loc-active" hidden>
+      <span aria-hidden="true">📍</span>
+      <span class="loc-label" id="loc-label"></span>
+      <button type="button" class="loc-clear" id="btn-loc-clear" aria-label="Clear location">✕</button>
+    </div>
+
     <form class="chat-input" id="chat-form">
       <input id="chat-text" type="text" placeholder="Ask about any charger…" autocomplete="off" />
       <button type="submit" class="send-btn">➤</button>

@@ -54,10 +54,70 @@ def _rows(con, sql, args=()):
     return con.execute(sql, args).fetchall()
 
 
-def answer(con, query, lat=None, lng=None):
+def resolve_place(con, text):
+    """Turn a typed place into (lat, lng, label), or None.
+
+    Mirrors the resolver in the web app so the API, the MCP server and the
+    browser all understand the same inputs. Tried in order:
+        6-digit PIN -> city name -> area/landmark -> state centroid
+    """
+    import re as _re
+    raw = (text or "").strip()
+    if not raw:
+        return None
+    ql = raw.lower()
+
+    pin = _re.search(r"\b\d{6}\b", raw)
+    if pin:
+        r = _rows(con, "SELECT latitude,longitude FROM stations "
+                       "WHERE address LIKE ? AND latitude IS NOT NULL LIMIT 1",
+                  (f"%{pin.group(0)}%",))
+        if r:
+            return (r[0]["latitude"], r[0]["longitude"], f"PIN {pin.group(0)}")
+
+    r = _rows(con, "SELECT name,latitude,longitude FROM cities "
+                   "WHERE lower(name)=? AND latitude IS NOT NULL LIMIT 1", (ql,))
+    if not r:
+        r = _rows(con, "SELECT name,latitude,longitude FROM cities "
+                       "WHERE lower(name) LIKE ? AND latitude IS NOT NULL "
+                       "ORDER BY length(name) LIMIT 1", (f"{ql}%",))
+    if not r:
+        r = _rows(con, "SELECT name,latitude,longitude FROM cities "
+                       "WHERE lower(name) LIKE ? AND latitude IS NOT NULL "
+                       "ORDER BY length(name) LIMIT 1", (f"%{ql}%",))
+    if r:
+        return (r[0]["latitude"], r[0]["longitude"], r[0]["name"])
+
+    r = _rows(con, "SELECT code,name FROM states "
+                   "WHERE lower(name)=? OR lower(code)=? LIMIT 1", (ql, ql))
+    if r:
+        c = _rows(con, "SELECT AVG(latitude) a, AVG(longitude) b FROM stations "
+                       "WHERE state_code=? AND latitude IS NOT NULL", (r[0]["code"],))
+        if c and c[0]["a"] is not None:
+            return (c[0]["a"], c[0]["b"], r[0]["name"])
+    r = _rows(con, "SELECT s.name, c.name AS city_name, s.latitude, s.longitude "
+                   "FROM stations s LEFT JOIN cities c ON c.id = s.city_id "
+                   "WHERE (lower(s.name) LIKE ? OR lower(s.address) LIKE ? "
+                   "       OR lower(c.name) LIKE ?) "
+                   "AND s.latitude IS NOT NULL LIMIT 1",
+              (f"%{ql}%", f"%{ql}%", f"%{ql}%"))
+    if r:
+        return (r[0]["latitude"], r[0]["longitude"], r[0]["city_name"] or r[0]["name"])
+
+    return None
+
+
+def answer(con, query, lat=None, lng=None, place=None):
     q = (query or "").strip()
     ql = q.lower()
     intent = {"type": "unknown", "filters": {}}
+
+    # A caller may hand us a place name instead of coordinates.
+    place_label = None
+    if (lat is None or lng is None) and place:
+        hit = resolve_place(con, place)
+        if hit:
+            lat, lng, place_label = hit
     filters = {}
 
     if not q:
@@ -207,7 +267,16 @@ def answer(con, query, lat=None, lng=None):
         out = []
         for d, r in top:
             out.append({**_slim(r), "distance_km": round(d, 1)})
-        return _respond(intent, out, f"Here are the nearest charging stations to you.")
+        where = f" near {place_label}" if place_label else " to you"
+        tail = f" Closest is {out[0]['name']}, {out[0]['distance_km']} km away." if out else ""
+        return _respond(intent, out, f"Here are the nearest charging stations{where}.{tail}")
+
+    # "near me" but no coordinates and no resolvable place: ask, don't guess.
+    if filters.get("nearest") and lat is None and lng is None:
+        return _respond(intent, [],
+                        "Tell me where you are and I'll find the closest chargers - "
+                        "share your location in the app, or send a city, area or "
+                        "6-digit PIN code.")
 
     if filters.get("cheapest"):
         sql += " ORDER BY min_price ASC NULLS LAST"

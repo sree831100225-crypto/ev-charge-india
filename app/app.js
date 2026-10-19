@@ -10,7 +10,7 @@ const API = ""; // same-origin; set to a base URL if the API is elsewhere
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 
-let state = { speed: "", conn: "", type: "", verified: false, q: "", user: null, map: null, markers: [] };
+let state = { speed: "", conn: "", type: "", verified: false, q: "", user: null, map: null, markers: [], chatLoc: null };
 
 /* ---------------- boot ---------------- */
 document.addEventListener("DOMContentLoaded", () => {
@@ -200,7 +200,17 @@ function popupHtml(s) {
 
 /* ---------------- list ---------------- */
 function renderList() {
-  const rows = filtered().slice().sort((a, b) => b.max_power_kw - a.max_power_kw);
+  const loc = state.chatLoc;
+  let rows = filtered().slice();
+  if (loc) {
+    // with a location active, nearest-first is what the user wants
+    rows = rows
+      .map(s => s.latitude != null
+        ? { ...s, distance_km: haversine(loc.lat, loc.lng, s.latitude, s.longitude) } : s)
+      .sort((a, b) => (a.distance_km ?? 1e9) - (b.distance_km ?? 1e9));
+  } else {
+    rows.sort((a, b) => b.max_power_kw - a.max_power_kw);
+  }
   const box = $("#list-results");
   if (!rows.length) { box.innerHTML = `<div class="empty">No stations match these filters.<br>Try clearing a filter.</div>`; return; }
   box.innerHTML = rows.map(s => {
@@ -211,7 +221,7 @@ function renderList() {
       <div class="card-top">
         <div>
           <div class="card-name">${esc(s.name)}</div>
-          <div class="card-loc">${esc(s.city)}, ${esc(s.state)}${s.highway ? " · " + esc(s.highway) : ""}${s.village ? " · " + esc(s.village) : ""}</div>
+          <div class="card-loc">${esc(s.city)}, ${esc(s.state)}${s.highway ? " · " + esc(s.highway) : ""}${s.village ? " · " + esc(s.village) : ""}${s.distance_km != null ? ' · <span class="dist">' + s.distance_km.toFixed(1) + " km</span>" : ""}</div>
         </div>
         <span class="badge ${badgeCls}">${esc(s.location_type.replace(" / Rural", ""))}</span>
       </div>
@@ -324,7 +334,7 @@ function openDetail(id) {
 function initChat() {
   $("#chat").dataset.init = "1";
   botSay("Namaste! I'm your EV Charge agent. Ask me about chargers anywhere in India — by city, highway, connector, speed or price.", []);
-  const sugs = ["Turbo chargers on NH-48", "Cheapest charging in Jaipur", "CCS2 stations in Pune", "Rural stations in Haryana", "Fast charging near me"];
+  const sugs = ["Chargers near me", "Turbo chargers on NH-48", "Cheapest charging in Jaipur", "CCS2 stations in Pune", "Rural stations in Haryana"];
   $("#chat-suggest").innerHTML = sugs.map(s => `<div class="sug">${esc(s)}</div>`).join("");
   $$(".sug").forEach(el => el.onclick = () => { $("#chat-text").value = el.textContent; $("#chat-form").requestSubmit(); });
 }
@@ -341,13 +351,41 @@ function wireChat() {
     try {
       const r = await fetch(API + "/api/agent/query", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: q })
+        body: JSON.stringify({ query: q, lat: state.chatLoc && state.chatLoc.lat,
+                               lng: state.chatLoc && state.chatLoc.lng })
       });
       if (r.ok) res = await r.json();
     } catch (e) { /* offline */ }
-    if (!res) res = localAgent(q);
+    if (!res) res = localAgent(q, state.chatLoc);
     t.remove();
     botSay(res.answer, res.stations || []);
+  };
+
+  // --- location controls ---
+  const gps = $("#btn-loc-gps");
+  if (gps) gps.onclick = () => useMyLocation();
+
+  const clr = $("#btn-loc-clear");
+  if (clr) clr.onclick = () => {
+    setChatLoc(null);
+    botSay("Cleared your location. Ask about any city, highway or operator.", []);
+  };
+
+  const li = $("#loc-input");
+  if (li) li.onkeydown = ev => {
+    if (ev.key !== "Enter") return;
+    ev.preventDefault();
+    const txt = li.value.trim();
+    if (!txt) return;
+    const loc = resolvePlace(txt);
+    if (!loc) {
+      botSay(`I don't recognise \u201c${txt}\u201d. Try a city like Pune, an area like ` +
+             `Koramangala, a state, or a 6-digit PIN code.`, []);
+      return;
+    }
+    li.value = "";
+    setChatLoc(loc);
+    botSay(`Searching around ${loc.label} \u2014 here are the closest chargers.`, nearestStations(5));
   };
 }
 
@@ -356,7 +394,8 @@ function botSay(t, stations) {
   const d = document.createElement("div"); d.className = "msg bot";
   let html = esc(t);
   (stations || []).slice(0, 5).forEach(s => {
-    html += `<span class="mini-card" data-id="${s.id}"><b>${esc(s.name)}</b><small>${esc(s.city || "")}, ${esc(s.state || "")}${s.max_power_kw ? " · " + s.max_power_kw + " kW" : ""}${s.min_price ? " · ₹" + s.min_price + "/kWh" : ""}</small></span>`;
+    const dist = s.distance_km != null ? `<span class="dist"> · ${s.distance_km.toFixed(1)} km</span>` : "";
+    html += `<span class="mini-card" data-id="${s.id}"><b>${esc(s.name)}</b><small>${esc(s.city || "")}, ${esc(s.state || "")}${dist}${s.max_power_kw ? " · " + s.max_power_kw + " kW" : ""}${s.min_price ? " · ₹" + s.min_price + "/kWh" : ""}</small></span>`;
   });
   d.innerHTML = html;
   $("#chat").appendChild(d); scrollChat();
@@ -370,7 +409,121 @@ function botTyping() {
 function scrollChat() { const c = $("#chat"); c.scrollTop = c.scrollHeight; }
 
 /* offline agent: mirrors the Python engine in agent.py */
-function localAgent(q) {
+/* ---------------- location ---------------- */
+const R_EARTH_KM = 6371;
+
+function haversine(lat1, lon1, lat2, lon2) {
+  const rad = d => (d * Math.PI) / 180;
+  const dLat = rad(lat2 - lat1), dLon = rad(lon2 - lon1);
+  const a = Math.sin(dLat / 2) ** 2 +
+            Math.cos(rad(lat1)) * Math.cos(rad(lat2)) * Math.sin(dLon / 2) ** 2;
+  return 2 * R_EARTH_KM * Math.asin(Math.min(1, Math.sqrt(a)));
+}
+
+function stateCentroid(code) {
+  const pts = DATA.filter(s => s.state_code === code && s.latitude != null);
+  if (!pts.length) return null;
+  return {
+    lat: pts.reduce((a, s) => a + s.latitude, 0) / pts.length,
+    lng: pts.reduce((a, s) => a + s.longitude, 0) / pts.length,
+  };
+}
+
+/* Turn whatever the user typed into coordinates. Tried in order:
+   PIN code -> city name -> area/landmark in a station name or address -> state. */
+function resolvePlace(text) {
+  const raw = (text || "").trim();
+  if (!raw) return null;
+  const q = raw.toLowerCase();
+
+  const pin = raw.match(/\b\d{6}\b/);
+  if (pin) {
+    const hit = DATA.find(s => (s.address || "").includes(pin[0]));
+    if (hit && hit.latitude != null)
+      return { lat: hit.latitude, lng: hit.longitude, label: `PIN ${pin[0]}`, source: "place" };
+  }
+
+  const cities = META.cities || [];
+  const city = cities.find(c => c.name.toLowerCase() === q)
+            || cities.find(c => c.name.toLowerCase().startsWith(q))
+            || cities.find(c => c.name.toLowerCase().includes(q));
+  if (city) return { lat: city.latitude, lng: city.longitude, label: city.name, source: "place" };
+
+  const sn = (META.states || []).find(s => s.name.toLowerCase() === q || s.code.toLowerCase() === q);
+  if (sn) {
+    const c = stateCentroid(sn.code);
+    if (c) return { ...c, label: sn.name, source: "place" };
+  }
+  const st = DATA.find(s => (s.name || "").toLowerCase().includes(q))
+          || DATA.find(s => (s.address || "").toLowerCase().includes(q))
+          || DATA.find(s => (s.city || "").toLowerCase().includes(q));
+  if (st && st.latitude != null)
+    return { lat: st.latitude, lng: st.longitude, label: st.city || st.name, source: "place" };
+
+  return null;
+}
+
+function setChatLoc(loc) {
+  state.chatLoc = loc;
+  const chip = $("#loc-active"), label = $("#loc-label");
+  if (chip && label) {
+    if (loc) {
+      label.textContent = loc.source === "gps"
+        ? `Using your current location (${loc.lat.toFixed(3)}, ${loc.lng.toFixed(3)})`
+        : `Searching around ${loc.label}`;
+      chip.hidden = false;
+    } else {
+      chip.hidden = true;
+    }
+  }
+  try { renderList(); renderMarkers(); } catch (e) { /* not ready yet */ }
+}
+
+function nearestStations(n) {
+  if (!state.chatLoc) return [];
+  return DATA.filter(s => s.latitude != null)
+    .map(s => ({ ...s, distance_km: haversine(state.chatLoc.lat, state.chatLoc.lng, s.latitude, s.longitude) }))
+    .sort((a, b) => a.distance_km - b.distance_km)
+    .slice(0, n);
+}
+
+function useMyLocation() {
+  const chip = $("#loc-active"), label = $("#loc-label");
+  if (!navigator.geolocation) {
+    botSay("This browser can't share a location. Type a city, area or PIN code instead.", []);
+    return;
+  }
+  if (!window.isSecureContext) {
+    botSay("Sharing a location needs a secure (https) page. Type a city, area or PIN code instead.", []);
+    return;
+  }
+  const btn = $("#btn-loc-gps");
+  if (btn) btn.disabled = true;
+  if (chip && label) { label.textContent = "Getting your location…"; chip.hidden = false; }
+
+  navigator.geolocation.getCurrentPosition(
+    p => {
+      if (btn) btn.disabled = false;
+      setChatLoc({ lat: p.coords.latitude, lng: p.coords.longitude,
+                   label: "Current location", source: "gps" });
+      const near = nearestStations(5);
+      botSay(near.length
+        ? `Got it — here are the chargers closest to you, nearest first.`
+        : `Got your location, but I have no stations with coordinates near you yet.`,
+        near);
+    },
+    err => {
+      if (btn) btn.disabled = false;
+      if (chip) chip.hidden = true;
+      botSay(err && err.code === 1
+        ? "Location permission was denied. Type a city, area or PIN code instead."
+        : "I couldn't get your location just now. Type a city, area or PIN code instead.", []);
+    },
+    { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 }
+  );
+}
+
+function localAgent(q, loc) {
   const ql = q.toLowerCase();
   const f = {};
   const speedMap = { turbo: "Turbo", ultra: "Turbo", hyper: "Turbo", rapid: "Fast", fast: "Fast", normal: "Normal", slow: "Normal" };
@@ -407,14 +560,31 @@ function localAgent(q) {
     if (f.city && s.city !== f.city) return false;
     return true;
   });
-  rows = rows.map(s => ({ ...s, min_price: s.tariffs.length ? Math.min(...s.tariffs.map(t => t.price_per_kwh)) : null }));
+  // "near me" with no location yet: ask for one rather than guessing
+  if (f.near && !loc) {
+    return { needLoc: true, stations: [],
+      answer: "Happy to find chargers near you. Tap 📍 Use my location, or type a city, area or PIN code in the box below." };
+  }
+
+  rows = rows.map(s => {
+    const o = { ...s, min_price: s.tariffs.length ? Math.min(...s.tariffs.map(t => t.price_per_kwh)) : null };
+    if (loc && s.latitude != null && s.longitude != null)
+      o.distance_km = haversine(loc.lat, loc.lng, s.latitude, s.longitude);
+    return o;
+  });
+
   if (f.cheap) rows.sort((a, b) => (a.min_price || 99) - (b.min_price || 99));
+  else if (loc) rows.sort((a, b) => (a.distance_km ?? 1e9) - (b.distance_km ?? 1e9));
   else rows.sort((a, b) => b.max_power_kw - a.max_power_kw);
 
-  const desc = [f.speed ? f.speed.toLowerCase() + "-charging" : "", f.conn || "", f.city ? "in " + f.city : (f.state ? "in " + f.state : ""), f.highway ? "on " + f.highway : "", f.operator ? "operated by " + f.operator : "", f.type ? f.type.toLowerCase() + " locations" : "", f.pay ? "accepting " + f.pay : "", f.near ? "near you" : ""].filter(Boolean).join(" ");
+  const nearTxt = loc
+    ? (loc.source === "gps" ? "near your current location" : "near " + loc.label)
+    : (f.near ? "near you" : "");
+  const desc = [f.speed ? f.speed.toLowerCase() + "-charging" : "", f.conn || "", f.city ? "in " + f.city : (f.state ? "in " + f.state : ""), f.highway ? "on " + f.highway : "", f.operator ? "operated by " + f.operator : "", f.type ? f.type.toLowerCase() + " locations" : "", f.pay ? "accepting " + f.pay : "", nearTxt].filter(Boolean).join(" ");
   if (!rows.length) return { answer: `I couldn't find any stations matching ${desc || "that"}. Try a nearby city or a broader filter.`, stations: [] };
   let ans = `${rows.length === 1 ? "Here is 1 station" : "Here are " + rows.length + " stations"} ${desc}.`;
   if (f.cheap && rows[0].min_price) ans += ` Cheapest is ${rows[0].name} at ₹${rows[0].min_price}/kWh.`;
+  else if (loc && rows[0].distance_km != null) ans += ` Closest is ${rows[0].name}, ${rows[0].distance_km.toFixed(1)} km away.`;
   return { answer: ans, stations: rows.slice(0, 5) };
 }
 
