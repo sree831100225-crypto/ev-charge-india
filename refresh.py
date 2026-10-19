@@ -22,10 +22,15 @@ import os
 import sqlite3
 from datetime import datetime, timezone
 
-from sources import eamrit
+from sources import eamrit, ocm
 
 SOURCES = [
-    {"id": "eamrit", "adapter": eamrit, "label": eamrit.SOURCE_LABEL},
+    # Globally hosted, so reachable from CI runners anywhere. This is the
+    # source that actually delivers new records day to day.
+    {"id": "ocm", "adapter": ocm, "label": ocm.SOURCE_LABEL, "live_only": True},
+    # Indian government host - frequently unreachable from non-Indian
+    # datacentre IPs, in which case it falls back to its checked-in snapshot.
+    {"id": "eamrit", "adapter": eamrit, "label": eamrit.SOURCE_LABEL, "live_only": False},
 ]
 
 UPSERT_FIELDS = [
@@ -127,6 +132,14 @@ def _upsert_station(con, rec):
     )
     new_id = cur.lastrowid
 
+    # connectors, when the source publishes them (Open Charge Map does)
+    for c in (rec.get("connectors") or []):
+        con.execute(
+            """INSERT INTO connectors(station_id,connector_type,formal_name,current_type,
+               power_kw,charging_speed,quantity,status) VALUES(?,?,?,?,?,?,?,?)""",
+            (new_id, c.get("type"), c.get("formal"), c.get("current"), c.get("power_kw"),
+             c.get("speed"), c.get("qty") or 1, "Operational"))
+
     # e-AMRIT gives a free/paid hint but no connector data
     price = rec.get("tariff_price_per_kwh")
     if price is not None:
@@ -136,6 +149,11 @@ def _upsert_station(con, rec):
             (new_id, None, price, "INR",
              "Free of charge (as reported by e-AMRIT)" if price == 0 else "Reported by e-AMRIT"),
         )
+    elif rec.get("usage_cost"):
+        con.execute(
+            "INSERT INTO tariffs(station_id,connector_type,price_per_kwh,currency,notes) "
+            "VALUES(?,?,?,?,?)",
+            (new_id, None, None, "INR", f"As reported: {rec['usage_cost'][:180]}"))
     return "created", new_id
 
 
@@ -174,12 +192,13 @@ def run_refresh(db_path, simulate=None):
             try:
                 records, mode = src["adapter"].get_records()
             except Exception as e:  # noqa: BLE001
-                notes.append(f"{src['label']}: fetch failed ({e})")
+                notes.append(f"{src['label']}: FETCH FAILED - {type(e).__name__}: {e}")
                 continue
-            good = 0
+            good = skipped = 0
             for raw in records:
                 rec = src["adapter"].normalise(raw)
                 if rec.get("latitude") is None or not rec.get("name"):
+                    skipped += 1
                     continue
                 seen += 1
                 result, _ = _upsert_station(con, rec)
@@ -188,7 +207,14 @@ def run_refresh(db_path, simulate=None):
                 else:
                     updated += 1
                 good += 1
-            notes.append(f"{src['label']}: {good} records ({mode})")
+            note = f"{src['label']}: {good} records ({mode})"
+            if mode != "live":
+                # Say this loudly - a silent snapshot fallback is how a
+                # 'working' daily job ends up changing nothing.
+                note += " - LIVE FETCH FAILED, used checked-in snapshot"
+            if skipped:
+                note += f", {skipped} skipped (no coordinates)"
+            notes.append(note)
 
     con.commit()
     finished = now_iso()

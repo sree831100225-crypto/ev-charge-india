@@ -45,8 +45,27 @@ jobs:
         with:
           python-version: "3.12"
 
+      # 0. Probe the sources so a blocked one is visible in the log rather
+      #    than silently falling back to a snapshot.
+      - name: Probe sources
+        continue-on-error: true
+        run: |
+          python - <<'PY'
+          import urllib.request
+          targets = [
+              ("e-AMRIT",         "https://e-amrit.niti.gov.in/getChargingStation"),
+              ("Open Charge Map", "https://api.openchargemap.io/v3/poi/?countrycode=IN&maxresults=1"),
+          ]
+          for name, url in targets:
+              try:
+                  r = urllib.request.urlopen(url, timeout=20)
+                  print(f"  {name}: reachable (HTTP {r.status})")
+              except Exception as e:
+                  print(f"  {name}: UNREACHABLE - {type(e).__name__}: {e}")
+          PY
+
       # 1. Rebuild the database from scratch: sample seed, then the live
-      #    e-AMRIT register, then the OEM network data.
+      #    sources, then the OEM network data.
       - name: Rebuild database
         run: |
           set -e
