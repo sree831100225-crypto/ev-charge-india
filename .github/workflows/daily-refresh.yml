@@ -66,12 +66,40 @@ jobs:
 
       # 1. Rebuild the database from scratch: sample seed, then the live
       #    sources, then the OEM network data.
+      #
+      #    OCM_API_KEY is optional but strongly recommended. Without it,
+      #    api.openchargemap.io answers 403 and the only remaining source
+      #    (e-AMRIT) is geo-blocked from US runners - so the refresh would
+      #    fall back to its snapshot and change nothing.
+      #    Add it under Settings > Secrets and variables > Actions.
       - name: Rebuild database
+        env:
+          OCM_API_KEY: ${{ secrets.OCM_API_KEY }}
         run: |
           set -e
           python build/seed.py
           python refresh.py
           python build/add_oem_data.py
+
+      # 2. Fail loudly if no source delivered live data. A daily job that
+      #    quietly re-imports a snapshot looks healthy while doing nothing.
+      - name: Check that a live source actually delivered
+        run: |
+          python - <<'PY'
+          import sqlite3, sys
+          con = sqlite3.connect("ev_charge_india.db")
+          notes = con.execute(
+              "SELECT notes FROM refresh_log ORDER BY id DESC LIMIT 1").fetchone()[0] or ""
+          live = "LIVE FETCH FAILED" not in notes
+          print(notes)
+          if live:
+              print("::notice::At least one live source delivered data.")
+          else:
+              print("::warning title=No live data this run::"
+                    "Every live source was unreachable, so the database was rebuilt "
+                    "from checked-in snapshots only. Add the OCM_API_KEY repository "
+                    "secret to enable live refreshes.")
+          PY
 
       # 2. Report what the refresh actually produced.
       - name: Report
